@@ -225,12 +225,17 @@ static void MX_USART3_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-
+enum operation {
+    waiting,
+    dmxd,
+    unknown
+};
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+float a_tlc = 7;
+float a_dmx = 3;
 /* USER CODE END 0 */
 
 /**
@@ -271,23 +276,66 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim3);
+  HAL_UART_Transmit(&huart3, "r&c", 3, 50);
+
+  uint8_t code;
+  uint8_t op;
+
+  enum operation status = waiting;
+
+  uint16_t channel = 0;
+  uint16_t start;
+  uint8_t length;
+  uint16_t value;
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-noreturn"
   while (1)
   {
-      if (dmx_sent) {
-          toggle_runled();
-          dmx_sent = 0;
+//      if (dmx_sent) {
+//          toggle_runled();
+//          dmx_sent = 0;
+//      }
+
+     HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
+
+      HAL_UART_Receive(&huart3, &code, 1, 1000);
+
+      if (code == 125) {
+          // Operation code
+          HAL_UART_Receive(&huart3, &op, 1, 1000);
+
+          if (code == op) {
+              // pass the code to the next command
+          } else {
+              status = dmxd;
+              if (op == 'f') {
+                  // full dmx package
+                  channel = 0;
+              }
+          }
       }
-      HAL_Delay(1000/25);
-      dmx_data[1] = 255;
-      dmx_data[2] = (dmx_data[2] + 5) % 255;
+
+      if (status == dmxd) {
+          if (channel >= 512) {
+              channel = 0;
+          }
+
+//          float origin = code / 255.0;
+//          float inter = (exp(a_dmx*origin)-1)/(exp(a_dmx)-1);
+//          dmx_data[channel + 1] = 255 * inter;
+          dmx_data[channel + 1] = code;
+          channel++;
+      }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
+#pragma clang diagnostic pop
   /* USER CODE END 3 */
 }
 
@@ -632,6 +680,8 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void dmx()
 {
+    toggle_runled();
+
     // bring the TX pin under GPIO control
     // this has the added effect that the pin is low
     set_pa9_gpio();
