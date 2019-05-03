@@ -43,10 +43,177 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
+/**
+ * @brief Toggles the state of the run led.
+ *
+ * The run led indicates that the main loop of the application is still running.
+ *
+ * This method is implemented as a register call because it is highly
+ * performance critical.
+ *
+ * This method is implemented as a define, to ensure that the code is inlined by
+ * the compiler. This is done for performance reasons.
+ *
+ * GCC treats the inline keyword as an optimization hint. The compiler may still
+ * ignore the keyword and not inline the function. This is avoided by using a
+ * define.
+ *
+ * @param None.
+ * @return None.
+ */
+#define toggle_runled() GPIOB->ODR ^= (1 << 14)
+
+/**
+ * @brief Toggles the state of the DE and (not)RE lines for USART1.
+ *
+ * This method is implemented as a register call because it is highly
+ * performance critical.
+ *
+ * This method is implemented as a define, to ensure that the code is inlined by
+ * the compiler. This is done for performance reasons.
+ *
+ * GCC treats the inline keyword as an optimization hint. The compiler may still
+ * ignore the keyword and not inline the function. This is avoided by using a
+ * define.
+ *
+ * @param None.
+ * @return None.
+ */
+#define toggle_usart1_de_re() GPIOA->ODR ^= 0x0030
+
+/**
+ * @brief Brings the PA9 pin under the control of USART1.
+ *
+ * The DMX protocol requires a degree of control over the line that cannot be
+ * achieved by use of a UART alone. The protocol requires that the line is
+ * pulled low for a given amount of microseconds. Therefore, the PA9 pin is
+ * switched between being controlled by the UART and as GPIO.
+ *
+ * This method is implemented as a register call because it is highly
+ * performance critical.
+ *
+ * This method is implemented as a define, to ensure that the code is inlined by
+ * the compiler. This is done for performance reasons.
+ *
+ * GCC treats the inline keyword as an optimization hint. The compiler may still
+ * ignore the keyword and not inline the function. This is avoided by using a
+ * define.
+ *
+ * @param None.
+ * @return None.
+ */
+#define set_pa9_uart() { GPIOD->MODER |= (1 << 11); GPIOD->MODER &= ~(1 << 10); }
+
+/**
+ * @brief Brings the PA9 pin under the control of GPIO port A.
+ *
+ * The DMX protocol requires a degree of control over the line that cannot be
+ * achieved by use of a UART alone. The protocol requires that the line is
+ * pulled low for a given amount of microseconds. Therefore, the PA9 pin is
+ * switched between being controlled by the UART and as GPIO.
+ *
+ * This method is implemented as a register call because it is highly
+ * performance critical.
+ *
+ * This method is implemented as a define, to ensure that the code is inlined by
+ * the compiler. This is done for performance reasons.
+ *
+ * GCC treats the inline keyword as an optimization hint. The compiler may still
+ * ignore the keyword and not inline the function. This is avoided by using a
+ * define.
+ *
+ * @param None.
+ * @return None.
+ */
+#define set_pa9_gpio() { GPIOD->MODER |= (1 << 10); GPIOD->MODER &= ~(1 << 11); }
+
+/**
+ * @brief Blocks for X microseconds by using TIM2.
+ *
+ * The wait is achieved by setting up the timer TIM2, followed by enabling
+ * the timer, and waiting until the timer period has lapsed. After the timer
+ * period has lapsed, the timer is disabled again.
+ *
+ * This method is implemented as a register call because it is highly
+ * performance critical.
+ *
+ * This method is implemented as a define, to ensure that the code is inlined by
+ * the compiler. This is done for performance reasons.
+ *
+ * GCC treats the inline keyword as an optimization hint. The compiler may still
+ * ignore the keyword and not inline the function. This is avoided by using a
+ * define.
+ *
+ * @param X The amount of microseconds to block.
+ * @return None.
+ */
+#define tim2_wait_usec(X) \
+        TIM2->PSC = 71; \
+        TIM2->ARR = X; \
+        TIM2->CNT = 0; \
+        TIM2->CR1 |= TIM_CR1_CEN; \
+        while (TIM2->CNT != TIM2->ARR) { } \
+TIM2->CR1 &= ~TIM_CR1_CEN
+
+/**
+* @brief Transmits the given byte over USART1 and waits until the transmit is
+* complete.
+*
+* This implements a blocking send for USART1.
+*
+* This method is implemented as a register call because it is highly
+* performance critical.
+*
+* This method is implemented as a define, to ensure that the code is inlined by
+* the compiler. This is done for performance reasons.
+*
+* GCC treats the inline keyword as an optimization hint. The compiler may still
+* ignore the keyword and not inline the function. This is avoided by using a
+* define.
+*
+* @param X The byte to send out on USART1.
+* @return None.
+*/
+#define usart1_tx_and_wait(X) \
+        while(!(USART2->ISR & (1 << 23))) { } \
+        USART2->TDR = X; \
+        while(!(USART2->ISR & (1 << 6))) { }
+
+/**
+* @brief The DMX database.
+*
+* This database holds the byte value of all the channels in the DMX512
+* protocol.
+*
+* Please note that there are 513 places in this buffer. The byte at position 0
+* is the start code, which is always 0.
+*
+* See the DMX 512 spec for more information.
+*/
+uint8_t dmx_data[513];
+
+/**
+ * @brief Update flag. This flag indicates that the DMX devices in the
+ * field must be updated.
+ */
+volatile uint8_t update;
+
+/**
+ * @brief Divider counter for the 25Hz signal.
+ */
+volatile uint8_t divider;
+
+/**
+ * @brief Flag indicating that the DMX packet was sent out over USART1
+ */
+volatile uint8_t dmx_sent;
 
 /* USER CODE END PV */
 
@@ -55,6 +222,8 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -88,6 +257,9 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+    for (int i = 0 ; i < 513; i++) {
+        dmx_data[i] = 0;
+    }
 
   /* USER CODE END SysInit */
 
@@ -95,15 +267,23 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_TIM_Base_Start_IT(&htim3);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      HAL_UART_Transmit(&huart3, "hello", 6, 10000);
+      if (dmx_sent) {
+          toggle_runled();
+          dmx_sent = 0;
+      }
+      HAL_Delay(1000/25);
+      dmx_data[1] = 255;
+      dmx_data[2] = (dmx_data[2] + 5) % 255;
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -121,15 +301,15 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /** Supply configuration update enable 
+  /** Supply configuration update enable
   */
   HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
-  /** Configure the main internal regulator output voltage 
+  /** Configure the main internal regulator output voltage
   */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
-  /** Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB busses clocks
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
@@ -147,7 +327,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  /** Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB busses clocks
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
@@ -173,6 +353,96 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 71;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 40000;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 71;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 40000;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -188,9 +458,9 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 250000;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.StopBits = UART_STOPBITS_2;
   huart2.Init.Parity = UART_PARITY_NONE;
   huart2.Init.Mode = UART_MODE_TX_RX;
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
@@ -360,7 +630,39 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void dmx()
+{
+    // bring the TX pin under GPIO control
+    // this has the added effect that the pin is low
+    set_pa9_gpio();
 
+    // set the DE and (not)RE lines high
+    // toggle_usart1_de_re();
+
+    // wait 88 microseconds for the DMX break
+    tim2_wait_usec(84);
+
+    // bring the TX pin under UART control
+    // this has the added effect that the pin is high
+    set_pa9_uart();
+
+    // wait 8 microseconds for the MAB (Mark After Break)
+    tim2_wait_usec(6);
+
+    // transmit the DMX data
+    HAL_UART_Transmit(&huart2, dmx_data, 50, HAL_MAX_DELAY);
+    //for (uint16_t i = 0; i < 513; i++) {
+
+    // transmit the byte with a blocking send
+    //    usart1_tx_and_wait(dmx_data[i]);
+
+    //}
+/*
+    // wait one additional character time before releasing the line
+    tim2_wait_usec(44);*/
+
+    dmx_sent = 1;
+}
 /* USER CODE END 4 */
 
 /**
