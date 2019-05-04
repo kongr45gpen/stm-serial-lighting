@@ -416,7 +416,7 @@ int main(void)
         channel = 0;
       }
 
-      if (channel > 33) {
+      if (channel > 19) {
           float origin = code / 255.0;
           float inter = (exp(a_dmx*origin)-1)/(exp(a_dmx)-1);
           dmx_data[channel + 1] = 255 * inter;
